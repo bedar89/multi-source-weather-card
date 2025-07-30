@@ -1,15 +1,17 @@
-import { LitElement, html, css } from 'lit';
-
-const VERSION = '1.0.0';
-
-// Console info
+// Multi-Source Weather Consensus Card - MVP Version 1.0.0
 console.info(
-  `%c MULTI-SOURCE-WEATHER-CARD %c v${VERSION} `,
+  '%c MULTI-SOURCE-WEATHER-CARD %c v1.0.0 ',
   'color: orange; font-weight: bold; background: black',
   'color: white; font-weight: bold; background: dimgray'
 );
 
-class MultiSourceWeatherCard extends LitElement {
+class MultiSourceWeatherCard extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+    this._consensusData = null;
+  }
+
   static getConfigElement() {
     return document.createElement('multi-source-weather-card-editor');
   }
@@ -32,17 +34,10 @@ class MultiSourceWeatherCard extends LitElement {
     };
   }
 
-  static get properties() {
-    return {
-      hass: { type: Object },
-      config: { type: Object },
-      _consensusData: { type: Object }
-    };
-  }
-
-  constructor() {
-    super();
-    this._consensusData = null;
+  set hass(hass) {
+    this._hass = hass;
+    this._calculateConsensus();
+    this._render();
   }
 
   setConfig(config) {
@@ -73,15 +68,16 @@ class MultiSourceWeatherCard extends LitElement {
     if (this.config.sources.length === 0) {
       this._autoDetectSources();
     }
+
+    this._render();
   }
 
   _autoDetectSources() {
-    if (!this.hass) return;
+    if (!this._hass) return;
 
-    const weatherEntities = Object.keys(this.hass.states)
+    const weatherEntities = Object.keys(this._hass.states)
       .filter(entityId => entityId.startsWith('weather.'))
       .map(entityId => {
-        const entity = this.hass.states[entityId];
         const integrationName = this._getIntegrationName(entityId);
         
         return {
@@ -126,22 +122,14 @@ class MultiSourceWeatherCard extends LitElement {
     return weights[integrationName] || 20;
   }
 
-  updated(changedProps) {
-    super.updated(changedProps);
-    
-    if (changedProps.has('hass') || changedProps.has('config')) {
-      this._calculateConsensus();
-    }
-  }
-
   _calculateConsensus() {
-    if (!this.hass || !this.config.sources) {
+    if (!this._hass || !this.config || !this.config.sources) {
       this._consensusData = null;
       return;
     }
 
     const activeSources = this.config.sources.filter(source => 
-      source.enabled && this.hass.states[source.entity]
+      source.enabled && this._hass.states[source.entity]
     );
 
     if (activeSources.length === 0) {
@@ -163,7 +151,7 @@ class MultiSourceWeatherCard extends LitElement {
     let validSources = [];
 
     activeSources.forEach(source => {
-      const entity = this.hass.states[source.entity];
+      const entity = this._hass.states[source.entity];
       if (entity && entity.attributes.temperature !== undefined) {
         const temp = parseFloat(entity.attributes.temperature);
         if (!isNaN(temp)) {
@@ -205,7 +193,7 @@ class MultiSourceWeatherCard extends LitElement {
 
     // Get additional data from primary source (highest weight)
     const primarySource = validSources.reduce((a, b) => a.weight > b.weight ? a : b);
-    const primaryEntity = this.hass.states[primarySource.entity];
+    const primaryEntity = this._hass.states[primarySource.entity];
 
     this._consensusData = {
       temperature: consensusTemp,
@@ -221,8 +209,6 @@ class MultiSourceWeatherCard extends LitElement {
       sources: validSources,
       primary_source: primarySource
     };
-
-    this.requestUpdate();
   }
 
   _renderIcon(condition) {
@@ -247,71 +233,15 @@ class MultiSourceWeatherCard extends LitElement {
     return iconMap[condition] || '🌤️';
   }
 
-  _renderWarningBanner() {
-    if (!this._consensusData) return '';
-
-    const { confidence } = this._consensusData;
-    const threshold = this.config.consensus.confidence_threshold;
-
-    if (confidence >= threshold) return '';
-
-    return html`
-      <div class="warning-banner">
-        <strong>⚠️ Low Consensus Warning</strong><br>
-        Sources disagree significantly - confidence below ${threshold}%
-      </div>
-    `;
-  }
-
-  _renderSourceBreakdown() {
-    if (!this.config.display.show_source_breakdown || !this._consensusData) {
-      return '';
-    }
-
-    return html`
-      <div class="source-breakdown">
-        <div class="source-breakdown-title">Source Breakdown</div>
-        ${this._consensusData.sources.map(source => html`
-          <div class="source-item">
-            <span>${source.entity_name}: ${source.temperature}°C</span>
-            <span class="source-weight">${source.weight}%</span>
-          </div>
-        `)}
-      </div>
-    `;
-  }
-
-  _renderForecast() {
-    if (!this.config.display.show_forecast || !this._consensusData?.forecast) {
-      return '';
-    }
-
-    const forecast = this._consensusData.forecast.slice(0, 5);
-
-    return html`
-      <div class="forecast-strip">
-        ${forecast.map((day, index) => html`
-          <div class="forecast-item">
-            <div class="forecast-day">
-              ${index === 0 ? 'Today' : new Date(day.datetime).toLocaleDateString('en', { weekday: 'short' })}
-            </div>
-            <div class="forecast-icon">${this._renderIcon(day.condition)}</div>
-            <div class="forecast-temp">
-              ${Math.round(day.temperature)}°${day.templow ? `/${Math.round(day.templow)}°` : ''}
-            </div>
-          </div>
-        `)}
-      </div>
-    `;
-  }
-
-  render() {
-    if (!this.hass) {
-      return html`<div class="error">Home Assistant not available</div>`;
+  _render() {
+    if (!this._hass) {
+      this.shadowRoot.innerHTML = '<div style="padding: 24px; text-align: center;">Home Assistant not available</div>';
+      return;
     }
 
     if (!this._consensusData) {
-      return html`
+      this.shadowRoot.innerHTML = `
+        <style>${this._getStyles()}</style>
         <ha-card>
           <div class="card-content">
             <div class="no-data">
@@ -322,13 +252,71 @@ class MultiSourceWeatherCard extends LitElement {
           </div>
         </ha-card>
       `;
+      return;
     }
 
     const { temperature, condition, confidence, humidity, wind_speed } = this._consensusData;
     const cardClass = `weather-card ${this.config.card_mode || 'default'} ${this.config.display.background}`;
+    
+    // Warning banner
+    const warningBanner = confidence < this.config.consensus.confidence_threshold ? `
+      <div class="warning-banner">
+        <strong>⚠️ Low Consensus Warning</strong><br>
+        Sources disagree significantly - confidence below ${this.config.consensus.confidence_threshold}%
+      </div>
+    ` : '';
 
-    return html`
-      ${this._renderWarningBanner()}
+    // Source breakdown
+    const sourceBreakdown = this.config.display.show_source_breakdown ? `
+      <div class="source-breakdown">
+        <div class="source-breakdown-title">Source Breakdown</div>
+        ${this._consensusData.sources.map(source => `
+          <div class="source-item">
+            <span>${source.entity_name}: ${source.temperature}°C</span>
+            <span class="source-weight">${source.weight}%</span>
+          </div>
+        `).join('')}
+      </div>
+    ` : '';
+
+    // Forecast
+    const forecast = this.config.display.show_forecast && this._consensusData.forecast && this.config.card_mode !== 'compact' ? `
+      <div class="forecast-strip">
+        ${this._consensusData.forecast.slice(0, 5).map((day, index) => `
+          <div class="forecast-item">
+            <div class="forecast-day">
+              ${index === 0 ? 'Today' : new Date(day.datetime).toLocaleDateString('en', { weekday: 'short' })}
+            </div>
+            <div class="forecast-icon">${this._renderIcon(day.condition)}</div>
+            <div class="forecast-temp">
+              ${Math.round(day.temperature)}°${day.templow ? `/${Math.round(day.templow)}°` : ''}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    ` : '';
+
+    // Weather details (not in compact mode)
+    const weatherDetails = this.config.card_mode !== 'compact' ? `
+      <div class="weather-details">
+        <div class="weather-detail">
+          <div class="weather-detail-value">${Math.round((this._consensusData.forecast?.[0]?.precipitation || 0) * 100)}%</div>
+          <div class="weather-detail-label">🌧️ Rain</div>
+        </div>
+        <div class="weather-detail">
+          <div class="weather-detail-value">${Math.round(wind_speed || 0)} km/h</div>
+          <div class="weather-detail-label">💨 Wind</div>
+        </div>
+        <div class="weather-detail">
+          <div class="weather-detail-value">${humidity || 0}%</div>
+          <div class="weather-detail-label">💧 Humidity</div>
+        </div>
+      </div>
+    ` : '';
+
+    this.shadowRoot.innerHTML = `
+      <style>${this._getStyles()}</style>
+      ${warningBanner}
       
       <ha-card style="border-radius: ${this.config.display.border_radius}px;">
         <div class="${cardClass}">
@@ -354,32 +342,16 @@ class MultiSourceWeatherCard extends LitElement {
             </div>
           </div>
 
-          ${this.config.card_mode !== 'compact' ? html`
-            <div class="weather-details">
-              <div class="weather-detail">
-                <div class="weather-detail-value">${Math.round((this._consensusData.forecast?.[0]?.precipitation || 0) * 100)}%</div>
-                <div class="weather-detail-label">🌧️ Rain</div>
-              </div>
-              <div class="weather-detail">
-                <div class="weather-detail-value">${Math.round(wind_speed || 0)} km/h</div>
-                <div class="weather-detail-label">💨 Wind</div>
-              </div>
-              <div class="weather-detail">
-                <div class="weather-detail-value">${humidity || 0}%</div>
-                <div class="weather-detail-label">💧 Humidity</div>
-              </div>
-            </div>
-          ` : ''}
-
-          ${this.config.card_mode !== 'compact' ? this._renderForecast() : ''}
-          ${this._renderSourceBreakdown()}
+          ${weatherDetails}
+          ${forecast}
+          ${sourceBreakdown}
         </div>
       </ha-card>
     `;
   }
 
-  static get styles() {
-    return css`
+  _getStyles() {
+    return `
       :host {
         display: block;
       }
@@ -435,11 +407,6 @@ class MultiSourceWeatherCard extends LitElement {
 
       .weather-card.compact {
         padding: 16px;
-      }
-
-      .weather-card.compact .weather-details,
-      .weather-card.compact .forecast-strip {
-        display: none;
       }
 
       .weather-header {
@@ -603,6 +570,10 @@ class MultiSourceWeatherCard extends LitElement {
         background: rgba(0,0,0,0.1);
       }
     `;
+  }
+
+  getCardSize() {
+    return 3;
   }
 }
 
