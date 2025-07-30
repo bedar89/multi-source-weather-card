@@ -1,0 +1,6 @@
+{
+  "name": "Multi-Source Weather Consensus Card",
+  "hacs": "1.32.0",
+  "render_readme": true,
+  "filename": "multi-source-weather-card.js"
+}
