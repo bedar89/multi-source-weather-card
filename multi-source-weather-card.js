@@ -1,4 +1,4 @@
-// Multi-Source Weather Consensus Card - MVP Version 1.0.0
+// Multi-Source Weather Consensus Card v1.0.0
 console.info(
   '%c MULTI-SOURCE-WEATHER-CARD %c v1.0.0 ',
   'color: orange; font-weight: bold; background: black',
@@ -10,6 +10,7 @@ class MultiSourceWeatherCard extends HTMLElement {
     super();
     this.attachShadow({ mode: 'open' });
     this._consensusData = null;
+    this.config = {};
   }
 
   static getConfigElement() {
@@ -18,6 +19,7 @@ class MultiSourceWeatherCard extends HTMLElement {
 
   static getStubConfig() {
     return {
+      type: 'custom:multi-source-weather-card',
       title: 'Weather Consensus',
       card_mode: 'default',
       sources: [],
@@ -28,14 +30,21 @@ class MultiSourceWeatherCard extends HTMLElement {
         show_forecast: true
       },
       consensus: {
-        confidence_threshold: 75,
-        disagreement_threshold: 25
+        confidence_threshold: 75
       }
     };
   }
 
   set hass(hass) {
+    if (!hass) return;
+    
     this._hass = hass;
+    
+    // Auto-detect sources if none configured
+    if (!this.config.sources || this.config.sources.length === 0) {
+      this._autoDetectSources();
+    }
+    
     this._calculateConsensus();
     this._render();
   }
@@ -46,6 +55,7 @@ class MultiSourceWeatherCard extends HTMLElement {
     }
 
     this.config = {
+      type: 'custom:multi-source-weather-card',
       title: 'Weather Consensus',
       card_mode: 'default',
       sources: [],
@@ -54,20 +64,14 @@ class MultiSourceWeatherCard extends HTMLElement {
         border_radius: 8,
         show_source_breakdown: false,
         show_forecast: true,
-        ...config.display
+        ...(config.display || {})
       },
       consensus: {
         confidence_threshold: 75,
-        disagreement_threshold: 25,
-        ...config.consensus
+        ...(config.consensus || {})
       },
       ...config
     };
-
-    // Auto-detect weather entities if no sources configured
-    if (this.config.sources.length === 0) {
-      this._autoDetectSources();
-    }
 
     this._render();
   }
@@ -77,53 +81,23 @@ class MultiSourceWeatherCard extends HTMLElement {
 
     const weatherEntities = Object.keys(this._hass.states)
       .filter(entityId => entityId.startsWith('weather.'))
-      .map(entityId => {
-        const integrationName = this._getIntegrationName(entityId);
-        
+      .slice(0, 4) // Limit to 4 sources
+      .map((entityId, index) => {
+        const weights = [35, 30, 25, 10]; // Default weights
         return {
           entity: entityId,
-          weight: this._getSuggestedWeight(integrationName),
+          weight: weights[index] || 20,
           enabled: true
         };
-      })
-      .slice(0, 5); // Limit to 5 sources max
+      });
 
-    this.config = {
-      ...this.config,
-      sources: weatherEntities
-    };
-  }
-
-  _getIntegrationName(entityId) {
-    const parts = entityId.split('.');
-    const name = parts[1] || '';
-    
-    // Common mappings
-    const mappings = {
-      'met_no': 'met.no',
-      'openweathermap': 'OpenWeatherMap',
-      'buienradar': 'Buienradar',
-      'accuweather': 'AccuWeather',
-      'weatherapi': 'WeatherAPI'
-    };
-
-    return mappings[name] || name.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-  }
-
-  _getSuggestedWeight(integrationName) {
-    const weights = {
-      'met.no': 35,
-      'OpenWeatherMap': 30,
-      'Buienradar': 25,
-      'AccuWeather': 20,
-      'WeatherAPI': 15
-    };
-
-    return weights[integrationName] || 20;
+    if (weatherEntities.length > 0) {
+      this.config.sources = weatherEntities;
+    }
   }
 
   _calculateConsensus() {
-    if (!this._hass || !this.config || !this.config.sources) {
+    if (!this._hass || !this.config.sources) {
       this._consensusData = null;
       return;
     }
@@ -137,7 +111,7 @@ class MultiSourceWeatherCard extends HTMLElement {
       return;
     }
 
-    const totalWeight = activeSources.reduce((sum, source) => sum + source.weight, 0);
+    const totalWeight = activeSources.reduce((sum, source) => sum + (source.weight || 0), 0);
     
     if (totalWeight === 0) {
       this._consensusData = null;
@@ -147,24 +121,21 @@ class MultiSourceWeatherCard extends HTMLElement {
     // Calculate weighted temperature
     let weightedTemp = 0;
     let temps = [];
-    let conditions = [];
     let validSources = [];
 
     activeSources.forEach(source => {
       const entity = this._hass.states[source.entity];
-      if (entity && entity.attributes.temperature !== undefined) {
-        const temp = parseFloat(entity.attributes.temperature);
-        if (!isNaN(temp)) {
-          weightedTemp += temp * source.weight;
-          temps.push(temp);
-          conditions.push(entity.state);
-          validSources.push({
-            ...source,
-            temperature: temp,
-            condition: entity.state,
-            entity_name: entity.attributes.friendly_name || source.entity
-          });
-        }
+      if (entity && entity.attributes && typeof entity.attributes.temperature === 'number') {
+        const temp = entity.attributes.temperature;
+        weightedTemp += temp * source.weight;
+        temps.push(temp);
+        validSources.push({
+          entity: source.entity,
+          weight: source.weight,
+          temperature: temp,
+          condition: entity.state,
+          name: entity.attributes.friendly_name || source.entity
+        });
       }
     });
 
@@ -175,176 +146,142 @@ class MultiSourceWeatherCard extends HTMLElement {
 
     const consensusTemp = Math.round(weightedTemp / totalWeight);
     
-    // Calculate confidence based on temperature spread
+    // Calculate confidence
     const minTemp = Math.min(...temps);
     const maxTemp = Math.max(...temps);
     const spread = maxTemp - minTemp;
     const confidence = Math.max(0, Math.min(100, 100 - (spread * 8)));
 
-    // Determine consensus condition (majority vote)
-    const conditionCounts = {};
-    conditions.forEach(condition => {
-      conditionCounts[condition] = (conditionCounts[condition] || 0) + 1;
-    });
-    
-    const consensusCondition = Object.keys(conditionCounts).reduce((a, b) => 
-      conditionCounts[a] > conditionCounts[b] ? a : b
-    );
-
-    // Get additional data from primary source (highest weight)
-    const primarySource = validSources.reduce((a, b) => a.weight > b.weight ? a : b);
+    // Get primary source for other data
+    const primarySource = validSources[0];
     const primaryEntity = this._hass.states[primarySource.entity];
 
     this._consensusData = {
       temperature: consensusTemp,
-      condition: consensusCondition,
+      condition: primaryEntity.state || 'unknown',
       confidence: Math.round(confidence),
-      spread: spread,
-      humidity: primaryEntity.attributes.humidity,
-      pressure: primaryEntity.attributes.pressure,
-      wind_speed: primaryEntity.attributes.wind_speed,
-      wind_bearing: primaryEntity.attributes.wind_bearing,
-      visibility: primaryEntity.attributes.visibility,
-      forecast: primaryEntity.attributes.forecast,
-      sources: validSources,
-      primary_source: primarySource
+      humidity: primaryEntity.attributes.humidity || 0,
+      wind_speed: primaryEntity.attributes.wind_speed || 0,
+      forecast: primaryEntity.attributes.forecast || [],
+      sources: validSources
     };
   }
 
-  _renderIcon(condition) {
-    const iconMap = {
+  _getWeatherIcon(condition) {
+    const icons = {
       'clear-night': '🌙',
       'cloudy': '☁️',
       'fog': '🌫️',
-      'hail': '🧊',
       'lightning': '⛈️',
       'lightning-rainy': '⛈️',
       'partlycloudy': '⛅',
       'pouring': '🌧️',
       'rainy': '🌦️',
       'snowy': '🌨️',
-      'snowy-rainy': '🌨️',
       'sunny': '☀️',
-      'windy': '💨',
-      'windy-variant': '💨',
-      'exceptional': '❗'
+      'windy': '💨'
     };
-
-    return iconMap[condition] || '🌤️';
+    return icons[condition] || '🌤️';
   }
 
   _render() {
-    if (!this._hass) {
-      this.shadowRoot.innerHTML = '<div style="padding: 24px; text-align: center;">Home Assistant not available</div>';
-      return;
-    }
-
     if (!this._consensusData) {
       this.shadowRoot.innerHTML = `
         <style>${this._getStyles()}</style>
         <ha-card>
-          <div class="card-content">
-            <div class="no-data">
-              <div class="icon">🌤️</div>
-              <div class="title">No Weather Data</div>
-              <div class="subtitle">Configure weather sources to see consensus data</div>
-            </div>
+          <div class="no-data">
+            <div>🌤️</div>
+            <div>No Weather Data Available</div>
+            <div>Configure weather sources</div>
           </div>
         </ha-card>
       `;
       return;
     }
 
-    const { temperature, condition, confidence, humidity, wind_speed } = this._consensusData;
-    const cardClass = `weather-card ${this.config.card_mode || 'default'} ${this.config.display.background}`;
+    const data = this._consensusData;
+    const config = this.config;
     
     // Warning banner
-    const warningBanner = confidence < this.config.consensus.confidence_threshold ? `
+    const showWarning = data.confidence < (config.consensus?.confidence_threshold || 75);
+    const warningHtml = showWarning ? `
       <div class="warning-banner">
-        <strong>⚠️ Low Consensus Warning</strong><br>
-        Sources disagree significantly - confidence below ${this.config.consensus.confidence_threshold}%
+        ⚠️ Low consensus confidence (${data.confidence}%)
       </div>
     ` : '';
 
     // Source breakdown
-    const sourceBreakdown = this.config.display.show_source_breakdown ? `
+    const breakdownHtml = config.display?.show_source_breakdown ? `
       <div class="source-breakdown">
-        <div class="source-breakdown-title">Source Breakdown</div>
-        ${this._consensusData.sources.map(source => `
+        <div class="breakdown-title">Source Breakdown</div>
+        ${data.sources.map(source => `
           <div class="source-item">
-            <span>${source.entity_name}: ${source.temperature}°C</span>
-            <span class="source-weight">${source.weight}%</span>
+            <span>${source.name}: ${source.temperature}°C</span>
+            <span class="weight">${source.weight}%</span>
           </div>
         `).join('')}
       </div>
     ` : '';
 
     // Forecast
-    const forecast = this.config.display.show_forecast && this._consensusData.forecast && this.config.card_mode !== 'compact' ? `
-      <div class="forecast-strip">
-        ${this._consensusData.forecast.slice(0, 5).map((day, index) => `
-          <div class="forecast-item">
-            <div class="forecast-day">
-              ${index === 0 ? 'Today' : new Date(day.datetime).toLocaleDateString('en', { weekday: 'short' })}
-            </div>
-            <div class="forecast-icon">${this._renderIcon(day.condition)}</div>
-            <div class="forecast-temp">
-              ${Math.round(day.temperature)}°${day.templow ? `/${Math.round(day.templow)}°` : ''}
-            </div>
+    const forecastHtml = config.display?.show_forecast && data.forecast?.length > 0 ? `
+      <div class="forecast">
+        ${data.forecast.slice(0, 5).map((day, index) => `
+          <div class="forecast-day">
+            <div class="day-name">${index === 0 ? 'Today' : new Date(day.datetime).toLocaleDateString('en', { weekday: 'short' })}</div>
+            <div class="day-icon">${this._getWeatherIcon(day.condition)}</div>
+            <div class="day-temp">${Math.round(day.temperature || 0)}°</div>
           </div>
         `).join('')}
       </div>
     ` : '';
 
-    // Weather details (not in compact mode)
-    const weatherDetails = this.config.card_mode !== 'compact' ? `
-      <div class="weather-details">
-        <div class="weather-detail">
-          <div class="weather-detail-value">${Math.round((this._consensusData.forecast?.[0]?.precipitation || 0) * 100)}%</div>
-          <div class="weather-detail-label">🌧️ Rain</div>
-        </div>
-        <div class="weather-detail">
-          <div class="weather-detail-value">${Math.round(wind_speed || 0)} km/h</div>
-          <div class="weather-detail-label">💨 Wind</div>
-        </div>
-        <div class="weather-detail">
-          <div class="weather-detail-value">${humidity || 0}%</div>
-          <div class="weather-detail-label">💧 Humidity</div>
-        </div>
-      </div>
-    ` : '';
-
     this.shadowRoot.innerHTML = `
       <style>${this._getStyles()}</style>
-      ${warningBanner}
-      
-      <ha-card style="border-radius: ${this.config.display.border_radius}px;">
-        <div class="${cardClass}">
-          <div class="weather-header">
-            <div>
-              <div class="weather-title">${this.config.title}</div>
-              <div class="weather-subtitle">Updated just now</div>
+      ${warningHtml}
+      <ha-card style="border-radius: ${config.display?.border_radius || 8}px;">
+        <div class="weather-card ${config.card_mode || 'default'} ${config.display?.background || 'gradient'}">
+          <div class="header">
+            <div class="title-section">
+              <div class="title">${config.title || 'Weather Consensus'}</div>
+              <div class="subtitle">Updated now</div>
             </div>
-            <div class="consensus-badge confidence-${confidence < this.config.consensus.confidence_threshold ? 'low' : 'high'}">
-              ${confidence}% confidence
+            <div class="confidence-badge ${data.confidence < 75 ? 'low' : 'high'}">
+              ${data.confidence}% confidence
             </div>
           </div>
-
-          <div class="weather-main">
-            <div class="weather-icon">${this._renderIcon(condition)}</div>
+          
+          <div class="main-weather">
+            <div class="weather-icon">${this._getWeatherIcon(data.condition)}</div>
             <div class="weather-info">
-              <div class="weather-temp">${temperature}°C</div>
-              <div class="weather-condition">${condition.replace(/-/g, ' ')}</div>
+              <div class="temperature">${data.temperature}°C</div>
+              <div class="condition">${data.condition.replace(/-/g, ' ')}</div>
             </div>
-            <div class="weather-extra">
-              <div>Feels like ${temperature + 2}°C</div>
-              <div>${this._consensusData.sources.length}/${this.config.sources.length} sources active</div>
+            <div class="extra-info">
+              <div>Humidity: ${data.humidity}%</div>
+              <div>${data.sources.length} sources</div>
             </div>
           </div>
 
-          ${weatherDetails}
-          ${forecast}
-          ${sourceBreakdown}
+          ${config.card_mode !== 'compact' ? `
+            <div class="weather-details">
+              <div class="detail">
+                <div class="detail-value">0%</div>
+                <div class="detail-label">🌧️ Rain</div>
+              </div>
+              <div class="detail">
+                <div class="detail-value">${Math.round(data.wind_speed)}km/h</div>
+                <div class="detail-label">💨 Wind</div>
+              </div>
+              <div class="detail">
+                <div class="detail-value">${data.humidity}%</div>
+                <div class="detail-label">💧 Humidity</div>
+              </div>
+            </div>
+          ` : ''}
+
+          ${forecastHtml}
+          ${breakdownHtml}
         </div>
       </ha-card>
     `;
@@ -355,237 +292,227 @@ class MultiSourceWeatherCard extends HTMLElement {
       :host {
         display: block;
       }
-
+      
       ha-card {
         overflow: hidden;
-        transition: all 0.3s ease;
+        box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,0.1));
       }
-
-      .error, .no-data {
-        padding: 24px;
+      
+      .no-data {
+        padding: 48px 24px;
         text-align: center;
         color: var(--secondary-text-color);
+        font-size: 16px;
+        line-height: 1.5;
       }
-
-      .no-data .icon {
-        font-size: 3rem;
+      
+      .no-data div:first-child {
+        font-size: 48px;
         margin-bottom: 16px;
       }
-
-      .no-data .title {
-        font-size: 1.2rem;
-        font-weight: 500;
-        margin-bottom: 8px;
-        color: var(--primary-text-color);
-      }
-
+      
       .warning-banner {
         background: linear-gradient(90deg, #f44336, #ff9800);
         color: white;
         padding: 12px 16px;
-        margin-bottom: 16px;
-        border-radius: 8px;
-        font-size: 0.9rem;
+        margin: 0 0 16px 0;
+        font-size: 14px;
+        border-radius: 4px;
       }
-
+      
       .weather-card {
         padding: 20px;
-        position: relative;
         color: white;
+        position: relative;
       }
-
-      .weather-card.default.gradient,
-      .weather-card.detailed.gradient {
+      
+      .weather-card.gradient {
         background: linear-gradient(135deg, #4fc3f7 0%, #29b6f6 100%);
       }
-
-      .weather-card.default.plain,
-      .weather-card.detailed.plain {
-        background: var(--card-background-color);
-        color: var(--primary-text-color);
+      
+      .weather-card.plain {
+        background: var(--card-background-color, #fff);
+        color: var(--primary-text-color, #000);
       }
-
+      
       .weather-card.compact {
         padding: 16px;
       }
-
-      .weather-header {
+      
+      .header {
         display: flex;
         justify-content: space-between;
         align-items: flex-start;
-        margin-bottom: 16px;
+        margin-bottom: 20px;
       }
-
-      .weather-title {
-        font-size: 1.1rem;
+      
+      .title {
+        font-size: 18px;
         font-weight: 500;
-        opacity: 0.9;
+        margin-bottom: 4px;
       }
-
-      .weather-subtitle {
-        font-size: 0.85rem;
-        opacity: 0.7;
-        margin-top: 2px;
+      
+      .subtitle {
+        font-size: 14px;
+        opacity: 0.8;
       }
-
-      .consensus-badge {
-        padding: 4px 12px;
+      
+      .confidence-badge {
+        padding: 6px 12px;
         border-radius: 16px;
-        font-size: 0.85rem;
-        font-weight: 500;
+        font-size: 12px;
+        font-weight: 600;
         background: rgba(255,255,255,0.2);
       }
-
-      .consensus-badge.confidence-low {
-        background: rgba(255,100,100,0.3);
+      
+      .confidence-badge.low {
+        background: rgba(244,67,54,0.3);
       }
-
-      .weather-main {
+      
+      .main-weather {
         display: flex;
         align-items: center;
         gap: 20px;
-        margin-bottom: 20px;
+        margin-bottom: 24px;
       }
-
+      
       .weather-icon {
-        font-size: 3rem;
-      }
-
-      .weather-card.compact .weather-icon {
-        font-size: 2rem;
-      }
-
-      .weather-temp {
-        font-size: 3.5rem;
-        font-weight: 300;
+        font-size: 64px;
         line-height: 1;
       }
-
-      .weather-card.compact .weather-temp {
-        font-size: 2.5rem;
+      
+      .temperature {
+        font-size: 48px;
+        font-weight: 300;
+        line-height: 1;
+        margin-bottom: 4px;
       }
-
-      .weather-condition {
-        font-size: 1.2rem;
+      
+      .condition {
+        font-size: 16px;
         opacity: 0.9;
-        margin-top: 4px;
         text-transform: capitalize;
       }
-
-      .weather-extra {
+      
+      .extra-info {
         margin-left: auto;
         text-align: right;
-        font-size: 0.9rem;
+        font-size: 14px;
         opacity: 0.8;
+        line-height: 1.4;
       }
-
+      
       .weather-details {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
         gap: 20px;
-        margin-bottom: 20px;
+        margin-bottom: 24px;
       }
-
-      .weather-detail {
+      
+      .detail {
         text-align: center;
       }
-
-      .weather-detail-value {
-        font-size: 1.2rem;
+      
+      .detail-value {
+        font-size: 20px;
         font-weight: 600;
         margin-bottom: 4px;
       }
-
-      .weather-detail-label {
-        font-size: 0.9rem;
+      
+      .detail-label {
+        font-size: 12px;
         opacity: 0.8;
       }
-
-      .forecast-strip {
+      
+      .forecast {
         display: grid;
         grid-template-columns: repeat(5, 1fr);
-        gap: 16px;
+        gap: 12px;
+        margin-bottom: 16px;
       }
-
-      .forecast-item {
+      
+      .forecast-day {
         text-align: center;
         padding: 12px 8px;
         background: rgba(255,255,255,0.1);
         border-radius: 8px;
       }
-
-      .weather-card.plain .forecast-item {
-        background: rgba(0,0,0,0.05);
-      }
-
-      .forecast-day {
-        font-size: 0.85rem;
-        opacity: 0.8;
+      
+      .day-name {
+        font-size: 12px;
         margin-bottom: 8px;
+        opacity: 0.8;
       }
-
-      .forecast-icon {
-        font-size: 1.8rem;
+      
+      .day-icon {
+        font-size: 24px;
         margin: 8px 0;
       }
-
-      .forecast-temp {
-        font-size: 0.9rem;
+      
+      .day-temp {
+        font-size: 14px;
         font-weight: 500;
       }
-
+      
       .source-breakdown {
         background: rgba(0,0,0,0.1);
-        border-radius: 8px;
         padding: 16px;
-        margin-top: 20px;
+        border-radius: 8px;
+        margin-top: 16px;
       }
-
-      .weather-card.plain .source-breakdown {
-        background: rgba(0,0,0,0.05);
-      }
-
-      .source-breakdown-title {
-        font-size: 0.95rem;
+      
+      .breakdown-title {
+        font-size: 14px;
+        font-weight: 500;
         margin-bottom: 12px;
-        opacity: 0.9;
       }
-
+      
       .source-item {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 8px 0;
-        font-size: 0.9rem;
+        padding: 6px 0;
+        font-size: 13px;
       }
-
-      .source-weight {
+      
+      .weight {
         background: rgba(255,255,255,0.2);
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-size: 0.8rem;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 11px;
       }
-
-      .weather-card.plain .source-weight {
-        background: rgba(0,0,0,0.1);
+      
+      /* Compact mode adjustments */
+      .weather-card.compact .weather-icon {
+        font-size: 48px;
+      }
+      
+      .weather-card.compact .temperature {
+        font-size: 36px;
+      }
+      
+      .weather-card.compact .weather-details,
+      .weather-card.compact .forecast {
+        display: none;
       }
     `;
   }
 
   getCardSize() {
-    return 3;
+    return this.config?.card_mode === 'compact' ? 2 : 4;
   }
 }
 
-// Register the card
-customElements.define('multi-source-weather-card', MultiSourceWeatherCard);
+// Register the custom element
+if (!customElements.get('multi-source-weather-card')) {
+  customElements.define('multi-source-weather-card', MultiSourceWeatherCard);
+  console.log('Multi-Source Weather Card registered successfully');
+}
 
-// Register with card picker
+// Add to card picker
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'multi-source-weather-card',
   name: 'Multi-Source Weather Consensus Card',
-  description: 'A card that combines multiple weather sources with intelligent consensus algorithms',
-  preview: false,
-  documentationURL: 'https://github.com/bedar89/multi-source-weather-card'
+  description: 'Combines multiple weather sources with intelligent consensus algorithms'
 });

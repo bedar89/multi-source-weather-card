@@ -4,6 +4,7 @@ class MultiSourceWeatherCardEditor extends HTMLElement {
     super();
     this.attachShadow({ mode: 'open' });
     this._activeTab = 'config';
+    this.config = {};
   }
 
   set hass(hass) {
@@ -13,6 +14,7 @@ class MultiSourceWeatherCardEditor extends HTMLElement {
 
   setConfig(config) {
     this.config = {
+      type: 'custom:multi-source-weather-card',
       title: 'Weather Consensus',
       card_mode: 'default',
       sources: [],
@@ -23,8 +25,7 @@ class MultiSourceWeatherCardEditor extends HTMLElement {
         show_forecast: true
       },
       consensus: {
-        confidence_threshold: 75,
-        disagreement_threshold: 25
+        confidence_threshold: 75
       },
       ...config
     };
@@ -42,50 +43,20 @@ class MultiSourceWeatherCardEditor extends HTMLElement {
 
     const weatherEntities = Object.keys(this._hass.states)
       .filter(entityId => entityId.startsWith('weather.'))
-      .map(entityId => {
-        const integrationName = this._getIntegrationName(entityId);
-        
+      .slice(0, 4)
+      .map((entityId, index) => {
+        const weights = [35, 30, 25, 10];
         return {
           entity: entityId,
-          weight: this._getSuggestedWeight(integrationName),
+          weight: weights[index] || 20,
           enabled: true
         };
-      })
-      .slice(0, 5);
+      });
 
-    this.config = {
-      ...this.config,
-      sources: weatherEntities
-    };
-
-    this._fireConfigChanged();
-  }
-
-  _getIntegrationName(entityId) {
-    const parts = entityId.split('.');
-    const name = parts[1] || '';
-    
-    const mappings = {
-      'met_no': 'met.no',
-      'openweathermap': 'OpenWeatherMap',
-      'buienradar': 'Buienradar',
-      'accuweather': 'AccuWeather',
-      'weatherapi': 'WeatherAPI'
-    };
-
-    return mappings[name] || name.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-  }
-
-  _getSuggestedWeight(integrationName) {
-    const weights = {
-      'met.no': 35,
-      'OpenWeatherMap': 30,
-      'Buienradar': 25,
-      'AccuWeather': 20,
-      'WeatherAPI': 15
-    };
-
-    return weights[integrationName] || 20;
+    if (weatherEntities.length > 0) {
+      this.config.sources = weatherEntities;
+      this._fireConfigChanged();
+    }
   }
 
   _fireConfigChanged() {
@@ -102,34 +73,36 @@ class MultiSourceWeatherCardEditor extends HTMLElement {
     this._render();
   }
 
-  _updateConfig(updates) {
-    this.config = { ...this.config, ...updates };
+  _updateConfig(key, value) {
+    this.config[key] = value;
     this._fireConfigChanged();
     this._render();
   }
 
-  _updateDisplayConfig(updates) {
-    this.config = {
-      ...this.config,
-      display: { ...this.config.display, ...updates }
-    };
+  _updateDisplayConfig(key, value) {
+    this.config.display = { ...this.config.display, [key]: value };
     this._fireConfigChanged();
     this._render();
   }
 
-  _updateConsensusConfig(updates) {
-    this.config = {
-      ...this.config,
-      consensus: { ...this.config.consensus, ...updates }
-    };
+  _updateConsensusConfig(key, value) {
+    this.config.consensus = { ...this.config.consensus, [key]: value };
     this._fireConfigChanged();
     this._render();
   }
 
-  _updateSource(index, updates) {
+  _updateSource(index, key, value) {
     const sources = [...this.config.sources];
-    sources[index] = { ...sources[index], ...updates };
-    this.config = { ...this.config, sources };
+    sources[index] = { ...sources[index], [key]: value };
+    this.config.sources = sources;
+    this._fireConfigChanged();
+    this._render();
+  }
+
+  _removeSource(index) {
+    const sources = [...this.config.sources];
+    sources.splice(index, 1);
+    this.config.sources = sources;
     this._fireConfigChanged();
     this._render();
   }
@@ -143,28 +116,14 @@ class MultiSourceWeatherCardEditor extends HTMLElement {
 
     if (availableEntities.length === 0) return;
 
-    const entityId = availableEntities[0];
-    const integrationName = this._getIntegrationName(entityId);
-
-    this.config = {
-      ...this.config,
-      sources: [
-        ...this.config.sources,
-        {
-          entity: entityId,
-          weight: this._getSuggestedWeight(integrationName),
-          enabled: true
-        }
-      ]
-    };
-    this._fireConfigChanged();
-    this._render();
-  }
-
-  _removeSource(index) {
-    const sources = [...this.config.sources];
-    sources.splice(index, 1);
-    this.config = { ...this.config, sources };
+    this.config.sources = [
+      ...this.config.sources,
+      {
+        entity: availableEntities[0],
+        weight: 20,
+        enabled: true
+      }
+    ];
     this._fireConfigChanged();
     this._render();
   }
@@ -180,31 +139,133 @@ class MultiSourceWeatherCardEditor extends HTMLElement {
       }));
   }
 
+  _setupEventListeners() {
+    // Set up event listeners after render
+    setTimeout(() => {
+      // Tab switching
+      this.shadowRoot.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', (e) => {
+          this._switchTab(e.target.dataset.tab);
+        });
+      });
+
+      // Form inputs
+      const titleInput = this.shadowRoot.querySelector('#title');
+      if (titleInput) {
+        titleInput.addEventListener('input', (e) => {
+          this._updateConfig('title', e.target.value);
+        });
+      }
+
+      const cardModeSelect = this.shadowRoot.querySelector('#card_mode');
+      if (cardModeSelect) {
+        cardModeSelect.addEventListener('change', (e) => {
+          this._updateConfig('card_mode', e.target.value);
+        });
+      }
+
+      // Display options
+      const showBreakdownCheckbox = this.shadowRoot.querySelector('#show_breakdown');
+      if (showBreakdownCheckbox) {
+        showBreakdownCheckbox.addEventListener('change', (e) => {
+          this._updateDisplayConfig('show_source_breakdown', e.target.checked);
+        });
+      }
+
+      const showForecastCheckbox = this.shadowRoot.querySelector('#show_forecast');
+      if (showForecastCheckbox) {
+        showForecastCheckbox.addEventListener('change', (e) => {
+          this._updateDisplayConfig('show_forecast', e.target.checked);
+        });
+      }
+
+      // Background style
+      const backgroundSelect = this.shadowRoot.querySelector('#background');
+      if (backgroundSelect) {
+        backgroundSelect.addEventListener('change', (e) => {
+          this._updateDisplayConfig('background', e.target.value);
+        });
+      }
+
+      // Border radius
+      const borderRadiusSlider = this.shadowRoot.querySelector('#border_radius');
+      if (borderRadiusSlider) {
+        borderRadiusSlider.addEventListener('input', (e) => {
+          this._updateDisplayConfig('border_radius', parseInt(e.target.value));
+        });
+      }
+
+      // Confidence threshold
+      const confidenceSlider = this.shadowRoot.querySelector('#confidence_threshold');
+      if (confidenceSlider) {
+        confidenceSlider.addEventListener('input', (e) => {
+          this._updateConsensusConfig('confidence_threshold', parseInt(e.target.value));
+        });
+      }
+
+      // Source controls
+      this.config.sources.forEach((source, index) => {
+        const enabledCheckbox = this.shadowRoot.querySelector(`#source_enabled_${index}`);
+        if (enabledCheckbox) {
+          enabledCheckbox.addEventListener('change', (e) => {
+            this._updateSource(index, 'enabled', e.target.checked);
+          });
+        }
+
+        const weightSlider = this.shadowRoot.querySelector(`#source_weight_${index}`);
+        if (weightSlider) {
+          weightSlider.addEventListener('input', (e) => {
+            this._updateSource(index, 'weight', parseInt(e.target.value));
+          });
+        }
+
+        const entitySelect = this.shadowRoot.querySelector(`#source_entity_${index}`);
+        if (entitySelect) {
+          entitySelect.addEventListener('change', (e) => {
+            this._updateSource(index, 'entity', e.target.value);
+          });
+        }
+
+        const removeButton = this.shadowRoot.querySelector(`#remove_source_${index}`);
+        if (removeButton) {
+          removeButton.addEventListener('click', () => {
+            this._removeSource(index);
+          });
+        }
+      });
+
+      // Add source button
+      const addButton = this.shadowRoot.querySelector('#add_source');
+      if (addButton) {
+        addButton.addEventListener('click', () => {
+          this._addSource();
+        });
+      }
+    }, 10);
+  }
+
   _render() {
     if (!this._hass) {
-      this.shadowRoot.innerHTML = '<div>Loading...</div>';
+      this.shadowRoot.innerHTML = '<div style="padding: 20px;">Loading...</div>';
       return;
     }
 
+    const availableEntities = this._getAvailableEntities();
+
+    // Config tab content
     const configTabContent = this._activeTab === 'config' ? `
       <div class="tab-content">
-        <!-- Basic Settings -->
-        <div class="config-section">
-          <div class="config-section-title">Basic Settings</div>
+        <div class="section">
+          <h3>Basic Settings</h3>
           
-          <div class="form-row">
-            <label class="form-label">Card Title</label>
-            <input 
-              type="text" 
-              class="form-input"
-              value="${this.config.title}"
-              onchange="this.getRootNode().host._updateConfig({title: this.value})"
-            />
+          <div class="field">
+            <label for="title">Card Title</label>
+            <input type="text" id="title" value="${this.config.title || ''}" />
           </div>
 
-          <div class="form-row">
-            <label class="form-label">Card Mode</label>
-            <select class="form-select" value="${this.config.card_mode}" onchange="this.getRootNode().host._updateConfig({card_mode: this.value})">
+          <div class="field">
+            <label for="card_mode">Card Mode</label>
+            <select id="card_mode">
               <option value="default" ${this.config.card_mode === 'default' ? 'selected' : ''}>Default</option>
               <option value="compact" ${this.config.card_mode === 'compact' ? 'selected' : ''}>Compact</option>
               <option value="detailed" ${this.config.card_mode === 'detailed' ? 'selected' : ''}>Detailed</option>
@@ -212,26 +273,20 @@ class MultiSourceWeatherCardEditor extends HTMLElement {
           </div>
         </div>
 
-        <!-- Weather Sources -->
-        <div class="config-section">
-          <div class="config-section-title">Weather Sources</div>
+        <div class="section">
+          <h3>Weather Sources</h3>
           
           ${this.config.sources.map((source, index) => `
             <div class="source-config">
               <div class="source-header">
-                <div class="source-info">
-                  <div class="source-name">
-                    ${this._hass.states[source.entity]?.attributes.friendly_name || source.entity}
-                  </div>
-                  <div class="source-entity">${source.entity}</div>
-                </div>
-                <button class="remove-btn" onclick="this.getRootNode().host._removeSource(${index})">×</button>
+                <h4>${this._hass.states[source.entity]?.attributes.friendly_name || source.entity}</h4>
+                <button type="button" id="remove_source_${index}" class="remove-btn">Remove</button>
               </div>
 
-              <div class="form-row">
-                <label class="form-label">Entity</label>
-                <select class="form-select" value="${source.entity}" onchange="this.getRootNode().host._updateSource(${index}, {entity: this.value})">
-                  ${this._getAvailableEntities().map(entity => `
+              <div class="field">
+                <label for="source_entity_${index}">Entity</label>
+                <select id="source_entity_${index}">
+                  ${availableEntities.map(entity => `
                     <option value="${entity.value}" ${entity.value === source.entity ? 'selected' : ''}>
                       ${entity.label}
                     </option>
@@ -239,109 +294,77 @@ class MultiSourceWeatherCardEditor extends HTMLElement {
                 </select>
               </div>
 
-              <div class="form-row">
-                <label class="form-label">
-                  <input 
-                    type="checkbox" 
-                    ${source.enabled ? 'checked' : ''}
-                    onchange="this.getRootNode().host._updateSource(${index}, {enabled: this.checked})"
-                  />
+              <div class="field">
+                <label>
+                  <input type="checkbox" id="source_enabled_${index}" ${source.enabled ? 'checked' : ''} />
                   Enabled
                 </label>
               </div>
 
-              <div class="form-row">
-                <label class="form-label">Weight: ${source.weight}%</label>
-                <input 
-                  type="range" 
-                  class="form-range"
-                  min="0" 
-                  max="100" 
-                  value="${source.weight}"
-                  oninput="this.getRootNode().host._updateSource(${index}, {weight: parseInt(this.value)})"
-                />
+              <div class="field">
+                <label for="source_weight_${index}">Weight: ${source.weight}%</label>
+                <input type="range" id="source_weight_${index}" min="0" max="100" value="${source.weight}" />
               </div>
             </div>
           `).join('')}
 
-          <button class="add-btn" onclick="this.getRootNode().host._addSource()">+ Add Weather Source</button>
+          <button type="button" id="add_source" class="add-btn">Add Weather Source</button>
         </div>
 
-        <!-- Consensus Settings -->
-        <div class="config-section">
-          <div class="config-section-title">Consensus Algorithm</div>
+        <div class="section">
+          <h3>Consensus Settings</h3>
           
-          <div class="form-row">
-            <label class="form-label">Confidence Threshold: ${this.config.consensus.confidence_threshold}%</label>
-            <input 
-              type="range" 
-              class="form-range"
-              min="50" 
-              max="95" 
-              value="${this.config.consensus.confidence_threshold}"
-              oninput="this.getRootNode().host._updateConsensusConfig({confidence_threshold: parseInt(this.value)})"
-            />
-            <div class="form-help">Show warning when consensus confidence falls below this threshold</div>
+          <div class="field">
+            <label for="confidence_threshold">Confidence Threshold: ${this.config.consensus?.confidence_threshold || 75}%</label>
+            <input type="range" id="confidence_threshold" min="50" max="95" value="${this.config.consensus?.confidence_threshold || 75}" />
+            <small>Show warning when consensus confidence falls below this threshold</small>
           </div>
         </div>
       </div>
     ` : '';
 
+    // Visibility tab content
     const visibilityTabContent = this._activeTab === 'visibility' ? `
       <div class="tab-content">
-        <div class="config-section">
-          <div class="config-section-title">Display Options</div>
+        <div class="section">
+          <h3>Display Options</h3>
           
-          <div class="form-row">
-            <label class="form-label">
-              <input 
-                type="checkbox" 
-                ${this.config.display.show_source_breakdown ? 'checked' : ''}
-                onchange="this.getRootNode().host._updateDisplayConfig({show_source_breakdown: this.checked})"
-              />
+          <div class="field">
+            <label>
+              <input type="checkbox" id="show_breakdown" ${this.config.display?.show_source_breakdown ? 'checked' : ''} />
               Show Source Breakdown
             </label>
-            <div class="form-help">Display individual source temperatures and weights</div>
+            <small>Display individual source temperatures and weights</small>
           </div>
 
-          <div class="form-row">
-            <label class="form-label">
-              <input 
-                type="checkbox" 
-                ${this.config.display.show_forecast ? 'checked' : ''}
-                onchange="this.getRootNode().host._updateDisplayConfig({show_forecast: this.checked})"
-              />
+          <div class="field">
+            <label>
+              <input type="checkbox" id="show_forecast" ${this.config.display?.show_forecast ? 'checked' : ''} />
               Show Forecast
             </label>
-            <div class="form-help">Display 5-day weather forecast</div>
+            <small>Display 5-day weather forecast</small>
           </div>
         </div>
       </div>
     ` : '';
 
+    // Layout tab content
     const layoutTabContent = this._activeTab === 'layout' ? `
       <div class="tab-content">
-        <div class="config-section">
-          <div class="config-section-title">Card Appearance</div>
+        <div class="section">
+          <h3>Card Appearance</h3>
           
-          <div class="form-row">
-            <label class="form-label">Background Style</label>
-            <select class="form-select" value="${this.config.display.background}" onchange="this.getRootNode().host._updateDisplayConfig({background: this.value})">
-              <option value="gradient" ${this.config.display.background === 'gradient' ? 'selected' : ''}>Gradient (Default)</option>
-              <option value="plain" ${this.config.display.background === 'plain' ? 'selected' : ''}>Plain</option>
+          <div class="field">
+            <label for="background">Background Style</label>
+            <select id="background">
+              <option value="gradient" ${this.config.display?.background === 'gradient' ? 'selected' : ''}>Gradient (Default)</option>
+              <option value="plain" ${this.config.display?.background === 'plain' ? 'selected' : ''}>Plain</option>
             </select>
           </div>
 
-          <div class="form-row">
-            <label class="form-label">Border Radius: ${this.config.display.border_radius}px</label>
-            <input 
-              type="range" 
-              class="form-range"
-              min="0" 
-              max="20" 
-              value="${this.config.display.border_radius}"
-              oninput="this.getRootNode().host._updateDisplayConfig({border_radius: parseInt(this.value)})"
-            />
+          <div class="field">
+            <label for="border_radius">Border Radius: ${this.config.display?.border_radius || 8}px</label>
+            <input type="range" id="border_radius" min="0" max="20" value="${this.config.display?.border_radius || 8}" />
           </div>
         </div>
       </div>
@@ -349,8 +372,9 @@ class MultiSourceWeatherCardEditor extends HTMLElement {
 
     this.shadowRoot.innerHTML = `
       <style>
-        .card-config {
+        .editor {
           padding: 16px;
+          font-family: var(--paper-font-body1_-_font-family);
         }
 
         .tab-bar {
@@ -368,7 +392,6 @@ class MultiSourceWeatherCardEditor extends HTMLElement {
           cursor: pointer;
           font-size: 14px;
           color: var(--secondary-text-color);
-          transition: all 0.2s;
         }
 
         .tab.active {
@@ -377,37 +400,37 @@ class MultiSourceWeatherCardEditor extends HTMLElement {
         }
 
         .tab:hover:not(.active) {
-          background: var(--divider-color);
+          background: var(--paper-item-icon-active-color);
         }
 
         .tab-content {
-          min-height: 400px;
+          min-height: 300px;
         }
 
-        .config-section {
+        .section {
           margin-bottom: 24px;
         }
 
-        .config-section-title {
+        .section h3 {
+          margin: 0 0 16px 0;
+          color: var(--primary-text-color);
           font-size: 16px;
           font-weight: 500;
-          margin-bottom: 16px;
-          color: var(--primary-text-color);
         }
 
-        .form-row {
+        .field {
           margin-bottom: 16px;
         }
 
-        .form-label {
+        .field label {
           display: block;
+          margin-bottom: 4px;
           font-size: 14px;
-          font-weight: 500;
-          margin-bottom: 8px;
           color: var(--primary-text-color);
+          font-weight: 500;
         }
 
-        .form-input, .form-select {
+        .field input, .field select {
           width: 100%;
           padding: 8px 12px;
           border: 1px solid var(--divider-color);
@@ -417,43 +440,21 @@ class MultiSourceWeatherCardEditor extends HTMLElement {
           color: var(--primary-text-color);
         }
 
-        .form-input:focus, .form-select:focus {
-          outline: none;
-          border-color: var(--primary-color);
-        }
-
-        .form-range {
-          width: 100%;
-          -webkit-appearance: none;
+        .field input[type="range"] {
+          padding: 0;
           height: 6px;
-          border-radius: 3px;
-          background: var(--divider-color);
-          outline: none;
         }
 
-        .form-range::-webkit-slider-thumb {
-          -webkit-appearance: none;
-          appearance: none;
-          width: 18px;
-          height: 18px;
-          border-radius: 50%;
-          background: var(--primary-color);
-          cursor: pointer;
+        .field input[type="checkbox"] {
+          width: auto;
+          margin-right: 8px;
         }
 
-        .form-range::-moz-range-thumb {
-          width: 18px;
-          height: 18px;
-          border-radius: 50%;
-          background: var(--primary-color);
-          cursor: pointer;
-          border: none;
-        }
-
-        .form-help {
+        .field small {
+          display: block;
+          margin-top: 4px;
           font-size: 12px;
           color: var(--secondary-text-color);
-          margin-top: 4px;
         }
 
         .source-config {
@@ -467,33 +468,24 @@ class MultiSourceWeatherCardEditor extends HTMLElement {
         .source-header {
           display: flex;
           justify-content: space-between;
-          align-items: flex-start;
+          align-items: center;
           margin-bottom: 12px;
         }
 
-        .source-name {
-          font-weight: 500;
+        .source-header h4 {
+          margin: 0;
+          font-size: 14px;
           color: var(--primary-text-color);
-        }
-
-        .source-entity {
-          font-size: 12px;
-          color: var(--secondary-text-color);
-          margin-top: 2px;
         }
 
         .remove-btn {
           background: var(--error-color);
           color: white;
           border: none;
-          border-radius: 50%;
-          width: 24px;
-          height: 24px;
+          padding: 4px 8px;
+          border-radius: 4px;
           cursor: pointer;
-          font-size: 16px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
+          font-size: 12px;
         }
 
         .add-btn {
@@ -505,40 +497,18 @@ class MultiSourceWeatherCardEditor extends HTMLElement {
           border-radius: 4px;
           cursor: pointer;
           font-size: 14px;
-          font-weight: 500;
         }
 
         .add-btn:hover {
           opacity: 0.9;
         }
-
-        input[type="checkbox"] {
-          margin-right: 8px;
-          accent-color: var(--primary-color);
-        }
       </style>
       
-      <div class="card-config">
-        <!-- Tab Navigation -->
+      <div class="editor">
         <div class="tab-bar">
-          <button 
-            class="tab ${this._activeTab === 'config' ? 'active' : ''}"
-            onclick="this.getRootNode().host._switchTab('config')"
-          >
-            Config
-          </button>
-          <button 
-            class="tab ${this._activeTab === 'visibility' ? 'active' : ''}"
-            onclick="this.getRootNode().host._switchTab('visibility')"
-          >
-            Visibility
-          </button>
-          <button 
-            class="tab ${this._activeTab === 'layout' ? 'active' : ''}"
-            onclick="this.getRootNode().host._switchTab('layout')"
-          >
-            Layout
-          </button>
+          <button class="tab ${this._activeTab === 'config' ? 'active' : ''}" data-tab="config">Config</button>
+          <button class="tab ${this._activeTab === 'visibility' ? 'active' : ''}" data-tab="visibility">Visibility</button>
+          <button class="tab ${this._activeTab === 'layout' ? 'active' : ''}" data-tab="layout">Layout</button>
         </div>
 
         ${configTabContent}
@@ -546,7 +516,13 @@ class MultiSourceWeatherCardEditor extends HTMLElement {
         ${layoutTabContent}
       </div>
     `;
+
+    this._setupEventListeners();
   }
 }
 
-customElements.define('multi-source-weather-card-editor', MultiSourceWeatherCardEditor);
+// Register the editor
+if (!customElements.get('multi-source-weather-card-editor')) {
+  customElements.define('multi-source-weather-card-editor', MultiSourceWeatherCardEditor);
+  console.log('Multi-Source Weather Card Editor registered successfully');
+}
